@@ -1,112 +1,133 @@
 """
-Vision Transformer (ViT) model adapted for EEG source localization.
+Transformer (ViT-style) model for EEG -> source time series.
+
+Input:  EEG batch shaped (B, E, T)
+Output: Source batch shaped (B, S, T)
+
+Implementation: treat each time step as a token whose features are the sensors.
+This is "ViT-like" in the sense of using a Transformer encoder with learnable positional
+embeddings, but is tailored to EEG time series.
 """
 
+from __future__ import annotations
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
+import pytorch_lightning as pl
 
 
-class EEGViTpl(nn.Module):
-    """
-    Vision Transformer for EEG source localization.
-    
-    Args:
-        num_sensor: Number of EEG sensors/electrodes
-        num_source: Number of source regions
-        n_times: Number of time points
-        embed_dim: Embedding dimension
-        depth: Number of transformer blocks
-        num_heads: Number of attention heads
-        mlp_dim: Hidden dimension of MLP
-        dropout: Dropout rate
-    """
-    
+class EEGViT(nn.Module):
     def __init__(
         self,
-        num_sensor=75,
-        num_source=994,
-        n_times=500,
-        embed_dim=256,
-        depth=6,
-        num_heads=8,
-        mlp_dim=512,
-        dropout=0.1,
-    ):
+        num_sensor: int,
+        num_source: int,
+        n_times: int = 500,
+        embed_dim: int = 256,
+        depth: int = 6,
+        num_heads: int = 8,
+        mlp_dim: int = 512,
+        dropout: float = 0.1,
+    ) -> None:
         super().__init__()
-        
         self.num_sensor = num_sensor
         self.num_source = num_source
         self.n_times = n_times
-        self.embed_dim = embed_dim
-        
-        # Create a submodule to match the saved state_dict structure
-        self.model = nn.Module()
-        
-        # Input projection - projects from sensor space to embedding space
-        self.model.in_proj = nn.Linear(num_sensor, embed_dim)
-        
-        # Positional embedding for time dimension
-        self.model.pos_embed = nn.Parameter(torch.zeros(1, n_times, embed_dim))
-        
-        # Transformer encoder using PyTorch's TransformerEncoderLayer
-        encoder_layer = nn.TransformerEncoderLayer(
+
+        self.in_proj = nn.Linear(num_sensor, embed_dim)
+        self.pos_embed = nn.Parameter(torch.zeros(1, n_times, embed_dim))
+        self.pos_drop = nn.Dropout(dropout)
+
+        enc_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
             dim_feedforward=mlp_dim,
             dropout=dropout,
-            activation='gelu',
+            activation="gelu",
             batch_first=True,
+            norm_first=True,
         )
-        self.model.encoder = nn.TransformerEncoder(encoder_layer, num_layers=depth)
-        
-        # Output projection for source reconstruction (per timestep)
-        self.model.out_proj = nn.Linear(embed_dim, num_source)
-        
-        # Initialize weights
-        self._init_weights()
-    
-    def _init_weights(self):
-        """Initialize model weights."""
-        nn.init.trunc_normal_(self.model.pos_embed, std=0.02)
-        
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight, std=0.02)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.LayerNorm):
-                nn.init.constant_(m.bias, 0)
-                nn.init.constant_(m.weight, 1.0)
-    
-    def forward(self, x):
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=depth)
+        self.out_proj = nn.Linear(embed_dim, num_source)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self) -> None:
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        # in/out projections use PyTorch defaults (Kaiming/uniform) which are fine.
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass.
-        
-        Args:
-            x: Input EEG data of shape (batch_size, num_sensor, n_times)
-        
-        Returns:
-            Source activity of shape (batch_size, num_source, n_times)
+        x: (B, E, T)
+        returns: (B, S, T)
         """
-        batch_size = x.shape[0]
-        
-        # Transpose to (B, n_times, num_sensor)
-        x = x.transpose(1, 2)  # (B, n_times, num_sensor)
-        
-        # Input projection - project sensor dimension to embedding
-        x = self.model.in_proj(x)  # (B, n_times, embed_dim)
-        
-        # Add positional embedding
-        x = x + self.model.pos_embed
-        
-        # Apply transformer encoder
-        x = self.model.encoder(x)  # (B, n_times, embed_dim)
-        
-        # Output projection - project to source space
-        x = self.model.out_proj(x)  # (B, n_times, num_source)
-        
-        # Transpose to (B, num_source, n_times)
-        x = x.transpose(1, 2)  # (B, num_source, n_times)
-        
-        return x
+        # (B, T, E)
+        x = x.permute(0, 2, 1)
+        if x.shape[1] != self.n_times:
+            raise ValueError(
+                f"EEGViT was initialized with n_times={self.n_times}, got T={x.shape[1]}. "
+                "Use the same n_times for training/eval or reinitialize the model."
+            )
+        x = self.in_proj(x)  # (B, T, D)
+        x = self.pos_drop(x + self.pos_embed)
+        x = self.encoder(x)  # (B, T, D)
+        x = self.out_proj(x)  # (B, T, S)
+        return x.permute(0, 2, 1)  # (B, S, T)
+
+
+class EEGViTpl(pl.LightningModule):
+    def __init__(
+        self,
+        num_sensor: int,
+        num_source: int,
+        n_times: int = 500,
+        embed_dim: int = 256,
+        depth: int = 6,
+        num_heads: int = 8,
+        mlp_dim: int = 512,
+        dropout: float = 0.1,
+        optimizer=torch.optim.Adam,
+        lr: float = 1e-3,
+        criterion=torch.nn.MSELoss(),
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters(ignore=["criterion", "optimizer"])
+
+        self.optimizer = optimizer
+        self.lr = lr
+        self.criterion = criterion
+
+        self.model = EEGViT(
+            num_sensor=num_sensor,
+            num_source=num_source,
+            n_times=n_times,
+            embed_dim=embed_dim,
+            depth=depth,
+            num_heads=num_heads,
+            mlp_dim=mlp_dim,
+            dropout=dropout,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+    def configure_optimizers(self):
+        return self.optimizer(self.model.parameters(), lr=self.lr)
+
+    def training_step(self, batch, batch_idx):
+        eeg, src = batch
+        eeg = eeg.float()
+        src = src.float()
+        src_hat = self.forward(eeg)
+        loss = self.criterion(src_hat, src)
+        self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        eeg, src = batch
+        eeg = eeg.float()
+        src = src.float()
+        src_hat = self.forward(eeg)
+        loss = self.criterion(src_hat, src)
+        self.log("validation_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        return loss
+
