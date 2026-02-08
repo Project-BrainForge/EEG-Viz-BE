@@ -51,6 +51,8 @@ app.register_blueprint(brain_router)
 
 
 if __name__ == '__main__':
+    import os
+    
     print("Initializing Brain Visualization API Server...")
     print(f"Device: {model_service.get_device()}")
     
@@ -64,5 +66,11 @@ if __name__ == '__main__':
     )
     model_service.load_model(MODEL_PATH)
     
-    print("\nServer ready! Starting Flask app...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Get configuration from environment variables
+    host = os.getenv('FLASK_HOST', '0.0.0.0')
+    port = int(os.getenv('FLASK_PORT', 5000))
+    debug = os.getenv('FLASK_ENV', 'production') == 'development'
+    
+    print(f"\nServer ready! Starting Flask app on {host}:{port}")
+    print(f"Environment: {'Development' if debug else 'Production'}")
+    app.run(host=host, port=port, debug=debug)

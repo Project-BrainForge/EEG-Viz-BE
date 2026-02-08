@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  eegviz-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eegviz-backend
+    environment:
+      - FLASK_ENV=production
+      - PYTHONUNBUFFERED=1
+    restart: always
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - eegviz-network
+    # Expose port for nginx on host to connect
+    ports:
+      - "127.0.0.1:5000:5000"
+
+networks:
+  eegviz-network:
+    driver: bridge
