@@ -60,6 +60,48 @@ EEGViz Backend provides an API for:
    pip install -r requirements.txt
    ```
 
+## Docker & Deployment
+
+### Local Development with Docker
+
+```bash
+# Build and run with Docker Compose
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop containers
+docker-compose down
+```
+
+### Deploy to AWS
+
+```bash
+# Login to AWS ECR
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
+
+# Build and push
+docker build -t eegviz-backend .
+docker tag eegviz-backend:latest YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/eegviz-backend:latest
+docker push YOUR_ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/eegviz-backend:latest
+
+```
+
+### Nginx on Host (Recommended for Production)
+
+Run nginx on your host machine to proxy requests to the Docker container:
+
+```bash
+# Run backend container (localhost only)
+docker-compose -f docker-compose.prod.yml up -d
+
+# Install and configure nginx
+sudo apt install nginx -y  # Ubuntu/Debian
+sudo cp nginx-simple.conf /etc/nginx/sites-available/eegviz-backend
+sudo ln -s /etc/nginx/sites-available/eegviz-backend /etc/nginx/sites-enabled/
+```
 ## Project Structure
 
 See [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) for detailed folder structure and architecture documentation.
