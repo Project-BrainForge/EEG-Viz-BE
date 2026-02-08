@@ -35,7 +35,7 @@ EEGViz Backend provides an API for:
 1. **Clone the repository**
 
    ```bash
-   git clone [<repository-url>](https://github.com/Project-BrainForge/EEG-Viz-BE.git)
+   git clone https://github.com/Project-BrainForge/EEG-Viz-BE.git
    cd EEGViz-BE
    ```
 
