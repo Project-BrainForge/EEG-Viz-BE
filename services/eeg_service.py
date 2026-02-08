@@ -134,6 +134,6 @@ class EEGService:
         global_activity = np.squeeze(global_activity)
         
         # Find peak time index (0-499)
-        peak_time = np.argmax(global_activity).item()/1000  # Convert numpy scalar to Python int
+        peak_time = np.argmax(global_activity).item()  # Convert numpy scalar to Python int
         
         return peak_time, global_activity

@@ -1,108 +1,200 @@
-"""
-Utility functions for EEG data processing and scaling.
-"""
+from scipy.io import loadmat, matlab
+import numpy as np
+# loading .mat arrays (function from the internet)
+def sec_to_hour(d) : 
+    """
+    translate a duration d (int or float) into a string in the format hour,minutes
+    """
+    h = int(d/3600)
+    m = int( ((d/3600 - h)%1)*60  )
+    return f"{h}h{m}mn"
+
+
+def load_mat(filename):
+    """
+    This function should be called instead of direct scipy.io.loadmat
+    as it cures the problem of not properly recovering python dictionaries
+    from mat files. It calls the function check keys to cure all entries
+    which are still mat-objects
+    """
+
+    def _check_vars(d):
+        """
+        Checks if entries in dictionary are mat-objects. If yes
+        todict is called to change them to nested dictionaries
+        """
+        for key in d:
+            if isinstance(d[key], matlab.mio5_params.mat_struct):
+                d[key] = _todict(d[key])
+            elif isinstance(d[key], np.ndarray):
+                d[key] = _toarray(d[key])
+        return d
+
+    def _todict(matobj):
+        """
+        A recursive function which constructs from matobjects nested dictionaries
+        """
+        d = {}
+        for strg in matobj._fieldnames:
+            elem = matobj.__dict__[strg]
+            if isinstance(elem, matlab.mio5_params.mat_struct):
+                d[strg] = _todict(elem)
+            elif isinstance(elem, np.ndarray):
+                d[strg] = _toarray(elem)
+            else:
+                d[strg] = elem
+        return d
+
+    def _toarray(ndarray):
+        """
+        A recursive function which constructs ndarray from cellarrays
+        (which are loaded as numpy ndarrays), recursing into the elements
+        if they contain matobjects.
+        """
+        if ndarray.dtype != 'float64':
+            elem_list = []
+            for sub_elem in ndarray:
+                if isinstance(sub_elem, matlab.mio5_params.mat_struct):
+                    elem_list.append(_todict(sub_elem))
+                elif isinstance(sub_elem, np.ndarray):
+                    elem_list.append(_toarray(sub_elem))
+                else:
+                    elem_list.append(sub_elem)
+            return np.array(elem_list)
+        else:
+            return ndarray
+
+    
+    data = loadmat(filename, struct_as_record=False, squeeze_me=True)
+    return _check_vars(data)
 
 import torch
-import numpy as np
+# Global Field Power (GFP) scaling
+def gfp_scaling(M, j_pred, G): 
+    # M: ground truth EEG data
+    # j_pred: estimated source distibution, unscaled
+    # G: leadfield matrix
+
+    j_pred_scaled = torch.zeros_like(j_pred)
+    M_pred = G @ j_pred 
+
+    for t in range(j_pred.shape[1]): #time instant by time instant
+        if torch.std(M_pred[:,t]) == 0: 
+            denom = 1
+        else : 
+            denom = torch.std(M_pred[:,t])
+        j_pred_scaled[:,t] = j_pred[:,t] * ( torch.std(M[:,t]) / denom ) #torch.std(M_pred[:,t]) )
+    
+    return j_pred_scaled
 
 
-def gfp_scaling(M, J, G):
-    """
-    Apply Global Field Power (GFP) scaling to source estimates.
+# patch 
+def get_patch(order, idx, neighbors): 
+    new_idx = np.array( [idx], dtype=np.int64 )
+    #print(new_idx)
+
+    if order == 0: 
+        return new_idx
     
-    This function scales the predicted source activity (J) such that when
-    projected through the leadfield (G), it matches the GFP of the measured
-    EEG data (M).
-    
-    Args:
-        M: Measured EEG data (batch_size, n_sensors, n_times) or (n_sensors, n_times)
-        J: Predicted source activity (batch_size, n_sources, n_times) or (n_sources, n_times)
-        G: Leadfield matrix (n_sensors, n_sources)
-    
-    Returns:
-        J_scaled: GFP-scaled source activity with same shape as J
-    """
-    
-    # Handle both batched and unbatched inputs
-    if M.dim() == 2:
-        M = M.unsqueeze(0)
-        J = J.unsqueeze(0)
-        squeeze_output = True
-    else:
-        squeeze_output = False
-    
-    batch_size = M.shape[0]
-    n_times = M.shape[2]
-    
-    # Calculate GFP of measured data (RMS across sensors)
-    gfp_m = torch.sqrt(torch.mean(M ** 2, dim=1, keepdim=True))  # (B, 1, n_times)
-    
-    # Project source activity to sensor space
-    # G: (n_sensors, n_sources), J: (B, n_sources, n_times)
-    M_pred = torch.matmul(G, J)  # (B, n_sensors, n_times)
-    
-    # Calculate GFP of predicted sensor data
-    gfp_pred = torch.sqrt(torch.mean(M_pred ** 2, dim=1, keepdim=True))  # (B, 1, n_times)
-    
-    # Avoid division by zero
-    gfp_pred = torch.clamp(gfp_pred, min=1e-10)
-    
-    # Calculate scaling factor
-    scale = gfp_m / gfp_pred  # (B, 1, n_times)
-    
-    # Apply scaling to source activity
-    J_scaled = J * scale.unsqueeze(1)  # (B, n_sources, n_times)
-    
-    if squeeze_output:
-        J_scaled = J_scaled.squeeze(0)
-    
-    return J_scaled
+    else: 
+        # for each order, find roder one neighbors of the current sources in patch
+        for _ in range(order): 
+            neighb = np.unique( neighbors[new_idx,:] )
+            #neighb = neighb[~np.isnan(neighb)].astype(np.int64)
+            neighb = neighb[neighb>0].astype(np.int64)
+            #neighb = np.array(neighb, dtype=np.int64)
+
+            #print(f"neighbors: {neighb}")
+            new_idx = np.append( new_idx, neighb )
+            #print(f"new indices: {new_idx}")
+            
+        
+        return np.unique(new_idx)
 
 
-def normalize_eeg(eeg_data, method='zscore'):
+import os
+def prepare_results_folders( results_path:str, dataset_name:str,  expe_folder:str, sub_folders:list = ["traind_models", "figs", "eval", "logs"] ): 
+    """ 
+    Prepare the arborescence of folders to save results 
+    - results_path: path to the folder in which to save results
+    - dataset_name: name of the dataset used for the experiments
+    - sub_folders: list of subfolders to create
+    - expe_folder: name of the folder of a given experiment
     """
-    Normalize EEG data.
-    
-    Args:
-        eeg_data: EEG data array (n_sensors, n_times) or (batch, n_sensors, n_times)
-        method: Normalization method ('zscore', 'minmax', or 'none')
-    
-    Returns:
-        Normalized EEG data with same shape as input
-    """
-    if method == 'zscore':
-        mean = np.mean(eeg_data, axis=-1, keepdims=True)
-        std = np.std(eeg_data, axis=-1, keepdims=True)
-        std = np.clip(std, 1e-10, None)  # Avoid division by zero
-        return (eeg_data - mean) / std
-    
-    elif method == 'minmax':
-        min_val = np.min(eeg_data, axis=-1, keepdims=True)
-        max_val = np.max(eeg_data, axis=-1, keepdims=True)
-        range_val = max_val - min_val
-        range_val = np.clip(range_val, 1e-10, None)
-        return (eeg_data - min_val) / range_val
-    
-    else:
-        return eeg_data
+
+    results_path = f"{results_path}/{dataset_name}"
 
 
-def compute_correlation(sources_true, sources_pred):
+    os.makedirs(results_path, exist_ok=True)
+
+    for sf in sub_folders: 
+        os.makedirs(f"{results_path}/{sf}/{expe_folder}", exist_ok=True)
+
+    return results_path, expe_folder
+
+
+############### compute neighbors v2 
+def get_neighbors(tris, verts): 
+    n_verts = len(verts[0]) + len(verts[1])
+
+    neighbors = [list() for _ in range(n_verts)]
+
+    for hem in range(2): 
+        i = 0
+        idx_tris_old = np.sort(np.unique(tris[hem])).astype(np.int64)
+        idx_vert_old = np.sort(np.unique(verts[hem])).astype(np.int64)
+
+        missing_verts = np.setdiff1d(idx_tris_old, idx_vert_old)
+        #idx_tris_new = np.arange(0, len(idx_tris_old))
+        idx_vert_new = np.arange(0, len(idx_vert_old))
+
+        vertices_lin = np.zeros((idx_vert_old.max()+1,1))
+        vertices_lin[idx_vert_old,0] = idx_vert_new
+        vertices_lin = vertices_lin.astype(np.int64)
+
+        for v in verts[hem]: 
+            triangles_of_v = np.squeeze(tris[hem] == v)
+            triangles_of_v = np.squeeze(tris[hem][np.sum(triangles_of_v, axis=1) > 0])
+
+            neighbors_of_v = np.unique(triangles_of_v)
+            neighbors_of_v = neighbors_of_v[neighbors_of_v != v]
+            neighbors_of_v = np.setdiff1d(neighbors_of_v, missing_verts)   
+            
+
+            #print(f"vert : {v}, {len(vertices_lin[neighbors_of_v,0])}")
+            neighbors[i] = list( vertices_lin[neighbors_of_v,0] )
+            i += 1
+
+    l_max           = np.amax( np.array([len(l) for l in neighbors]) )
+    neighb_array    = np.zeros( (len(neighbors), l_max) )
+    for i in range(len(neighbors) ) : 
+        l = neighbors[i]
+        neighb_array[i,:len(l)] = l
+        if len(l)<l_max: 
+            neighb_array[i,len(l):] = None 
+
+    return neighb_array.astype(np.int64)
+
+
+from torch import nn
+class logMSE(nn.Module): 
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def forward(self, x, x_hat) : 
+        mse = nn.MSELoss()
+        return torch.log10( mse( x, x_hat ) )
+    
+class CosineSimilarityLoss(nn.Module):
     """
-    Compute spatial correlation between true and predicted sources.
-    
-    Args:
-        sources_true: True source activity (n_sources, n_times)
-        sources_pred: Predicted source activity (n_sources, n_times)
-    
-    Returns:
-        Correlation coefficient
+    Cosine similarity loss based on the cosine similarity function
+
     """
-    # Flatten arrays
-    true_flat = sources_true.flatten()
-    pred_flat = sources_pred.flatten()
-    
-    # Compute correlation
-    corr = np.corrcoef(true_flat, pred_flat)[0, 1]
-    
-    return corr
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, x, x_hat):
+        cossim = nn.CosineSimilarity()
+        cossim_val = -cossim(x, x_hat)
+        return cossim_val.mean()
