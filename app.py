@@ -15,7 +15,7 @@ from routers.prediction_router import init_prediction_router
 from routers.brain_router import init_brain_router
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 
 # Configuration
 ANATOMY_DIR = Path("anatomy")
@@ -49,23 +49,22 @@ app.register_blueprint(health_router)
 app.register_blueprint(prediction_router)
 app.register_blueprint(brain_router)
 
+    # Load model and anatomy data
+anatomy_service.load_anatomy_data(
+    LEADFIELD_PATH, 
+    BRAIN_MESH_PATH, 
+    REGION_MAPPING_PATH,
+    N_ELECTRODES,
+    N_SOURCES
+)
+model_service.load_model(MODEL_PATH)
 
 if __name__ == '__main__':
     import os
     
     print("Initializing Brain Visualization API Server...")
     print(f"Device: {model_service.get_device()}")
-    
-    # Load model and anatomy data
-    anatomy_service.load_anatomy_data(
-        LEADFIELD_PATH, 
-        BRAIN_MESH_PATH, 
-        REGION_MAPPING_PATH,
-        N_ELECTRODES,
-        N_SOURCES
-    )
-    model_service.load_model(MODEL_PATH)
-    
+        
     # Get configuration from environment variables
     host = os.getenv('FLASK_HOST', '0.0.0.0')
     port = int(os.getenv('FLASK_PORT', 5000))

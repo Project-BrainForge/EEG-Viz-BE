@@ -27,4 +27,4 @@ jobs:
       - name: Connect to EC2 and deploy
         run: |
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-          ${{ secrets.USER }}@${{ secrets.HOST }} "cd /home/ubuntu/EEG-Viz-BE && git pull origin development && python3 helpers/deploy.py --action deploy"
+          ${{ secrets.USER }}@${{ secrets.HOST }} "cd /home/ubuntu/EEG-Viz-BE && git pull origin development && python3 helpers/deploy.py"
